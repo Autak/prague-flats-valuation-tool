@@ -26,9 +26,9 @@ def get_db_connection():
     )
     return conn
 
-# Load model
-@st.cache_resource
+# Load model (removed cache so it consistently uses the latest trained GIS model file)
 def load_model():
+    import time
     if os.path.exists("sreality_price_model.pkl"):
         return joblib.load("sreality_price_model.pkl")
     return None
@@ -103,7 +103,7 @@ with tab1:
 with tab2:
     st.header("Machine Learning Performance")
     st.markdown("""
-    Based on the latest hyperparameter tuning run, an **XGBoost Regressor** is dynamically trained to minimize absolute relative errors (MAPE).
+    Based on the latest hyperparameter tuning run, an **LightGBM Regressor** is dynamically trained to minimize MAE.
     
     The model translates the flat's raw attributes (Usable Area, Floor, Neighborhood, Property Type) to output the predicted listing price. 
     """)
@@ -126,6 +126,13 @@ with tab2:
 with tab3:
     st.header("Predict Your Flat's Market Listing Price")
     
+    @st.cache_data(ttl=600)
+    def fetch_neighborhoods():
+        query = "SELECT DISTINCT address_full FROM flats WHERE address_full LIKE '%-%'"
+        df_n = pd.read_sql(query, conn)
+        uniques = df_n['address_full'].astype(str).apply(lambda x: x.split('-')[-1].strip()).unique()
+        return sorted([n for n in uniques if n and n.lower() not in ['none', 'null', 'nan']])
+
     if model is None:
         st.error("Model file not found! Please run the training script first.")
     else:
@@ -140,9 +147,24 @@ with tab3:
             
             with c2:
                 district = st.selectbox("District", [f"Praha {i}" for i in range(1, 11)] + ["Praha-východ", "Praha-západ", "Other"])
-                st.markdown("**Exact Coordinates**")
-                lat_input = st.number_input("Latitude", value=50.088, format="%.5f")
-                lon_input = st.number_input("Longitude", value=14.420, format="%.5f")
+                
+                n_list = fetch_neighborhoods()
+                neighborhood = st.selectbox("Neighborhood (Katastrální území)", ["Unknown"] + n_list)
+                
+                # Dynamically set lat/lon default vectors based on chosen district boundaries
+                district_averages = fetch_map_data()
+                default_lat = 50.088
+                default_lon = 14.420
+                if district != "Other" and not district_averages.empty:
+                    # Look up district via another fast query just for the UX
+                    dist_df = pd.read_sql(f"SELECT AVG(latitude) as a_lat, AVG(longitude) as a_lon FROM flats WHERE district = '{district}'", conn)
+                    if not dist_df.empty and pd.notnull(dist_df['a_lat'][0]):
+                        default_lat = dist_df['a_lat'][0]
+                        default_lon = dist_df['a_lon'][0]
+                
+                st.markdown("**Exact Spatial Geometry (GPS)**")
+                lat_input = st.number_input("Latitude", value=float(default_lat), format="%.5f")
+                lon_input = st.number_input("Longitude", value=float(default_lon), format="%.5f")
             
             with c3:
                 building_type = st.selectbox("Building Type", ["Cihlová", "Panelová", "Smíšená", "Skeletová", "Novostavba"])
@@ -156,14 +178,25 @@ with tab3:
             submitted = st.form_submit_button("Predict Price!", type="primary", use_container_width=True)
             
             if submitted:
+                # Math util payload
+                def haversine(lat1, lon1, lat2, lon2):
+                    R = 6371.0 
+                    phi1, phi2 = np.radians(lat1), np.radians(lat2)
+                    dphi = np.radians(lat2 - lat1)
+                    dlambda = np.radians(lon2 - lon1)
+                    a = np.sin(dphi/2)**2 + np.cos(phi1) * np.cos(phi2) * np.sin(dlambda/2)**2
+                    return 2 * R * np.arctan2(np.sqrt(a), np.sqrt(1 - a))
+
                 # Build dataframe matching training schema
                 input_df = pd.DataFrame([{
                     "usable_area": area,
                     "floor": floor,
                     "latitude": lat_input,
                     "longitude": lon_input,
+                    "distance_to_center_km": haversine(lat_input, lon_input, 50.087, 14.421),
                     "disposition": disposition,
                     "district": district,
+                    "neighborhood": neighborhood,
                     "building_type": building_type,
                     "building_condition": building_condition,
                     "ownership_type": ownership,

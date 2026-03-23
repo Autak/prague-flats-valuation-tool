@@ -12,7 +12,7 @@ from sklearn.preprocessing import StandardScaler, OneHotEncoder
 from sklearn.linear_model import LinearRegression
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score, mean_absolute_percentage_error
-import xgboost as xgb
+import lightgbm as lgb
 import joblib
 import json
 
@@ -63,6 +63,21 @@ df['ownership_type'] = df['ownership_type'].fillna('Unknown')
 df['latitude'] = df['latitude'].fillna(df['latitude'].median() if not df['latitude'].isna().all() else 50.088)
 df['longitude'] = df['longitude'].fillna(df['longitude'].median() if not df['longitude'].isna().all() else 14.420)
 
+# Feature Engineering 1: Extract Cadastral Neighborhood from Raw Address Strings
+df['neighborhood'] = df['address_full'].astype(str).apply(lambda x: x.split('-')[-1].strip() if '-' in x else 'Unknown')
+df['neighborhood'] = df['neighborhood'].replace(['None', 'none', 'null', 'nan', ''], 'Unknown')
+
+# Feature Engineering 2: Haversine Distance to Prague Old Town Center (50.087, 14.421)
+def haversine(lat1, lon1, lat2, lon2):
+    R = 6371.0 # Earth radius in km
+    phi1, phi2 = np.radians(lat1), np.radians(lat2)
+    dphi = np.radians(lat2 - lat1)
+    dlambda = np.radians(lon2 - lon1)
+    a = np.sin(dphi/2)**2 + np.cos(phi1) * np.cos(phi2) * np.sin(dlambda/2)**2
+    return 2 * R * np.arctan2(np.sqrt(a), np.sqrt(1 - a))
+
+df['distance_to_center_km'] = haversine(df['latitude'], df['longitude'], 50.087, 14.421)
+
 print(f"Data loaded. Total valid rows: {len(df)}")
 
 import matplotlib.pyplot as plt
@@ -95,8 +110,8 @@ print("EDA plots magically saved into local 'eda_plots/' directory.")
 # ──────────────────────────────────────────────
 # 2. Preprocessing Setup
 # ──────────────────────────────────────────────
-num_features = ['usable_area', 'floor', 'latitude', 'longitude']
-cat_features = ['disposition', 'district', 'building_type', 'building_condition', 'ownership_type']
+num_features = ['usable_area', 'floor', 'latitude', 'longitude', 'distance_to_center_km']
+cat_features = ['disposition', 'district', 'neighborhood', 'building_type', 'building_condition', 'ownership_type']
 bool_features = ['lift', 'garage', 'has_outdoor']
 
 # Fill boolean NAs with False
@@ -128,7 +143,7 @@ preprocessor = ColumnTransformer(transformers=[
 # ──────────────────────────────────────────────
 # 3. Model Training & Evaluation
 # ──────────────────────────────────────────────
-def print_metrics(model_name, y_true_czk, y_pred_czk, save=False):
+def print_metrics(model_name, y_true_czk, y_pred_czk, save=True):
     rmse = np.sqrt(mean_squared_error(y_true_czk, y_pred_czk))
     mae = mean_absolute_error(y_true_czk, y_pred_czk)
     mape = mean_absolute_percentage_error(y_true_czk, y_pred_czk)
@@ -151,19 +166,20 @@ lr_pipeline.fit(X_train, y_train)
 lr_pred_czk = np.expm1(lr_pipeline.predict(X_test))
 print_metrics("Linear Regression Baseline", y_test_czk, lr_pred_czk)
 
-# B. XGBoost Regressor (with RandomizedSearchCV Hyperparameter Tuning optimizing MAPE)
-print("Tuning XGBoost...")
+# B. LightGBM Regressor (with RandomizedSearchCV Hyperparameter Tuning optimizing MAE)
+print("Tuning LightGBM to minimize MAE...")
 xgb_pipeline = Pipeline([
     ('preprocessor', preprocessor), 
-    ('model', xgb.XGBRegressor(random_state=42, objective='reg:squarederror'))
+    ('model', lgb.LGBMRegressor(random_state=42, verbose=-1, objective='regression_l1'))
 ])
 
 param_grid = {
-    'model__n_estimators': [100, 200, 300],
+    'model__n_estimators': [100, 200, 300, 500],
     'model__learning_rate': [0.01, 0.05, 0.1, 0.2],
     'model__max_depth': [3, 5, 7, 9],
     'model__subsample': [0.8, 1.0],
-    'model__colsample_bytree': [0.8, 1.0]
+    'model__colsample_bytree': [0.8, 1.0],
+    'model__num_leaves': [31, 50, 70]
 }
 
 # We use negative mean absolute error for tuning
@@ -171,7 +187,7 @@ search = RandomizedSearchCV(
     xgb_pipeline, 
     param_distributions=param_grid, 
     n_iter=10, 
-    scoring='neg_mean_absolute_percentage_error', 
+    scoring='neg_mean_absolute_error', 
     cv=3, 
     verbose=1, 
     n_jobs=-1,
@@ -181,8 +197,8 @@ search.fit(X_train, y_train)
 
 best_model = search.best_estimator_
 best_pred_czk = np.expm1(best_model.predict(X_test))
-print(f"Best XGBoost Params: {search.best_params_}")
-print_metrics("Tuned XGBoost Regressor", y_test_czk, best_pred_czk, save=True)
+print(f"Best LightGBM Params: {search.best_params_}")
+print_metrics("Tuned LightGBM Regressor", y_test_czk, best_pred_czk, save=True)
 
 # Save the absolute best model
 joblib.dump(best_model, "sreality_price_model.pkl")
