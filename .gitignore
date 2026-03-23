@@ -1,0 +1,21 @@
+# Environments
+.env
+
+# Python caches
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Model files
+*.pkl
+
+# Logs and outputs
+metrics.txt
+metrics.json
+eda_plots/
+
+# Virtual environment
+venv/
+env/
+.venv/
