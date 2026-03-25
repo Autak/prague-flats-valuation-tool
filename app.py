@@ -50,7 +50,7 @@ with tab1:
     def fetch_data():
         query = """
         SELECT hash_id, title, price, usable_area, disposition, district, building_type, floor, building_condition, 
-               ownership_type, lift, garage, balcony, terrace, loggia, address_full, scraped_at, listing_url
+               ownership_type, energy_class, lift, garage, balcony, terrace, loggia, address_full, scraped_at, listing_url
         FROM flats
         WHERE price IS NOT NULL AND title IS NOT NULL
         ORDER BY updated_at DESC
@@ -68,6 +68,10 @@ with tab1:
         
         # Extract correct disposition from title because the API failed to fetch it (recorded as 0)
         df['disposition'] = df['title'].str.extract(r'(\d\+(?:kk|1)|Atypický)', expand=False).fillna('Unknown')
+        
+        # Clean up energy class to explicit A-G string logic
+        df['energy_class'] = df['energy_class'].astype(str).str.extract(r'(?:Třída )?([A-G])', expand=False).fillna('Unknown')
+        
         # Fix missing usable_area from title
         missing = df['usable_area'].isnull()
         if missing.any():
@@ -170,6 +174,7 @@ with tab3:
                 building_type = st.selectbox("Building Type", ["Cihlová", "Panelová", "Smíšená", "Skeletová", "Novostavba"])
                 building_condition = st.selectbox("Condition", ["Velmi dobrý", "Dobrý", "Po rekonstrukci", "Před rekonstrukcí", "Novostavba", "Projekt"])
                 ownership = st.selectbox("Ownership", ["Osobní", "Družstevní", "Státní/obecní"])
+                energy_class = st.selectbox("Energy Class", ["Unknown", "A", "B", "C", "D", "E", "F", "G"])
                 st.markdown("**Amenities**")
                 has_lift = st.checkbox("Has Lift", value=True)
                 has_garage = st.checkbox("Has Garage/Parking")
@@ -194,6 +199,7 @@ with tab3:
                     "latitude": lat_input,
                     "longitude": lon_input,
                     "distance_to_center_km": haversine(lat_input, lon_input, 50.087, 14.421),
+                    "energy_num": {'A': 1, 'B': 2, 'C': 3, 'D': 4, 'E': 5, 'F': 6, 'G': 7, 'Unknown': 4}[energy_class],
                     "disposition": disposition,
                     "district": district,
                     "neighborhood": neighborhood,

@@ -33,11 +33,11 @@ SELECT
     price, title, usable_area, disposition, district, floor, 
     building_type, building_condition, ownership_type, 
     lift, garage, balcony, terrace, loggia, address_full,
-    latitude, longitude
+    latitude, longitude, energy_class
 FROM flats
 WHERE price IS NOT NULL 
-  AND price > 100000        -- basic filter for realistic prices
-  AND price < 150000000     -- exclude ultra-luxury outliers
+  AND price > 100000        
+  AND price <= 35000000     -- Drops top 1.5% ultra-luxury outliers
 """
 df = pd.read_sql(query, conn)
 conn.close()
@@ -46,8 +46,8 @@ conn.close()
 extracted_area = df['title'].str.extract(r'(\d+)\s*m', expand=False).astype(float)
 df['usable_area'] = df['usable_area'].combine_first(extracted_area)
 
-# Filter out rows that are still missing usable_area or are too small
-df = df[df['usable_area'].notnull() & (df['usable_area'] > 10)].copy()
+# Filter out rows that are still missing usable_area, too small, or hyper-large anomalies
+df = df[df['usable_area'].notnull() & (df['usable_area'] > 10) & (df['usable_area'] <= 250)].copy()
 
 # Consolidate outdoor amenities
 df['has_outdoor'] = df['balcony'].fillna(False) | df['terrace'].fillna(False) | df['loggia'].fillna(False)
@@ -55,9 +55,14 @@ df['has_outdoor'] = df['balcony'].fillna(False) | df['terrace'].fillna(False) | 
 # Extract robust disposition from the title string (since API serves '0')
 df['disposition'] = df['title'].str.extract(r'(\d\+(?:kk|1)|Atypický)', expand=False).fillna('Unknown')
 
-# Clean district and ownership
+# Clean district, ownership, and energy classes
 df['district'] = df['district'].fillna('Unknown')
 df['ownership_type'] = df['ownership_type'].fillna('Unknown')
+df['energy_class'] = df['energy_class'].astype(str).str.extract(r'(?:Třída )?([A-G])', expand=False).fillna('Unknown')
+
+# Feature Engineering 3: Ordinal Map Energy Classes cleanly as Numerics (A=1, G=7)
+energy_map = {'A': 1, 'B': 2, 'C': 3, 'D': 4, 'E': 5, 'F': 6, 'G': 7, 'Unknown': 4}
+df['energy_num'] = df['energy_class'].map(energy_map)
 
 # Gracefully impute coordinates if scrape is currently ongoing
 df['latitude'] = df['latitude'].fillna(df['latitude'].median() if not df['latitude'].isna().all() else 50.088)
@@ -110,7 +115,7 @@ print("EDA plots magically saved into local 'eda_plots/' directory.")
 # ──────────────────────────────────────────────
 # 2. Preprocessing Setup
 # ──────────────────────────────────────────────
-num_features = ['usable_area', 'floor', 'latitude', 'longitude', 'distance_to_center_km']
+num_features = ['usable_area', 'floor', 'latitude', 'longitude', 'distance_to_center_km', 'energy_num']
 cat_features = ['disposition', 'district', 'neighborhood', 'building_type', 'building_condition', 'ownership_type']
 bool_features = ['lift', 'garage', 'has_outdoor']
 
@@ -203,3 +208,23 @@ print_metrics("Tuned LightGBM Regressor", y_test_czk, best_pred_czk, save=True)
 # Save the absolute best model
 joblib.dump(best_model, "sreality_price_model.pkl")
 print("\nFinal Tuned Model saved locally to 'sreality_price_model.pkl'.")
+
+# ──────────────────────────────────────────────
+# 4. Diagnostics: Explain Feature Importances
+# ──────────────────────────────────────────────
+print("Generating Feature Importance diagnostics...")
+cat_encoder = best_model.named_steps['preprocessor'].named_transformers_['cat'].named_steps['onehot']
+encoded_cats = list(cat_encoder.get_feature_names_out(cat_features))
+all_features = num_features + encoded_cats + bool_features
+
+importances = best_model.named_steps['model'].feature_importances_
+fi_df = pd.DataFrame({'Feature': all_features, 'Importance': importances})
+fi_df = fi_df.sort_values(by='Importance', ascending=False).head(20)
+
+plt.figure(figsize=(12, 8))
+sns.barplot(data=fi_df, x='Importance', y='Feature', palette='viridis')
+plt.title('Top 20 Driving Predictive Features (LightGBM Split Impact)')
+plt.tight_layout()
+plt.savefig('eda_plots/feature_importance.png')
+plt.close()
+print("Diagnostic feature impact logic successfully saved to 'eda_plots/feature_importance.png'!")
