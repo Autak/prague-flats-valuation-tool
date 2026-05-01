@@ -9,6 +9,8 @@ __pycache__/
 
 # Model files
 *.pkl
+!sreality_price_model.pkl
+!sreality_rental_model.pkl
 
 # Logs and outputs
 metrics.txt
