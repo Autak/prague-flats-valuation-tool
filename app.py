@@ -1,4 +1,4 @@
-import streamlit as st
+﻿import streamlit as st
 import pandas as pd
 import numpy as np
 import psycopg2
@@ -12,19 +12,23 @@ import warnings
 
 warnings.filterwarnings('ignore')
 
-st.set_page_config(page_title="Sreality Pricing Dashboard", layout="wide", page_icon="🏢")
+st.set_page_config(page_title="Sreality Pricing Dashboard", layout="wide", page_icon="ðŸ¢")
 
 @st.cache_resource
-def get_db_connection():
+def get_db_engine():
     load_dotenv()
-    conn = psycopg2.connect(
-        host=os.getenv('DB_HOST', 'localhost'),
-        port=os.getenv('DB_PORT', '5432'),
-        dbname=os.getenv('DB_NAME', 'sreality'),
-        user=os.getenv('DB_USER', 'postgres'),
-        password=os.getenv('DB_PASSWORD', '')
+    # Cloud: use SUPABASE_DB_URL if set (Streamlit Cloud secrets or .env)
+    supa_url = os.getenv("SUPABASE_DB_URL")
+    if supa_url:
+        from sqlalchemy import create_engine as _ce
+        return _ce(supa_url, connect_args={"sslmode": "require"}, pool_pre_ping=True)
+    # Local fallback: build URL from individual env vars
+    from sqlalchemy import create_engine as _ce
+    local_url = (
+        f"postgresql+psycopg2://{os.getenv('DB_USER','postgres')}:{os.getenv('DB_PASSWORD','')}"
+        f"@{os.getenv('DB_HOST','localhost')}:{os.getenv('DB_PORT','5432')}/{os.getenv('DB_NAME','sreality')}"
     )
-    return conn
+    return _ce(local_url, pool_pre_ping=True)
 
 def load_model(path):
     if os.path.exists(path):
@@ -33,7 +37,7 @@ def load_model(path):
 
 sales_model = load_model("sreality_price_model.pkl")
 rental_model = load_model("sreality_rental_model.pkl")
-conn = get_db_connection()
+engine = get_db_engine()
 
 def haversine_vectorized(lat1, lon1, lat2, lon2):
     R = 6371.0 
@@ -68,9 +72,9 @@ def button_group(label, options, key, sidebar=False):
     container.markdown("<div style='margin-bottom: 10px;'></div>", unsafe_allow_html=True)
     return st.session_state[key]
 
-# ─────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # DATA LOADERS
-# ─────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @st.cache_data(ttl=300)
 def load_sales_data():
@@ -82,10 +86,11 @@ def load_sales_data():
       AND price <= 45000000
     ORDER BY updated_at DESC
     """
-    df = pd.read_sql(query, conn)
+    with engine.connect() as _c:
+        df = pd.read_sql(query, _c)
     
-    df['disposition'] = df['title'].str.extract(r'(\d\+(?:kk|1)|Atypický)', expand=False).fillna('Unknown')
-    df['energy_class'] = df['energy_class'].astype(str).str.extract(r'(?:Třída )?([A-G])', expand=False).fillna('Unknown')
+    df['disposition'] = df['title'].str.extract(r'(\d\+(?:kk|1)|AtypickÃ½)', expand=False).fillna('Unknown')
+    df['energy_class'] = df['energy_class'].astype(str).str.extract(r'(?:TÅ™Ã­da )?([A-G])', expand=False).fillna('Unknown')
     
     missing_area = df['usable_area'].isnull()
     if missing_area.any():
@@ -136,8 +141,12 @@ def load_sales_data():
 def load_rentals_data():
     # Check if rentals table exists
     try:
-        test_q = "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'rentals'"
-        test_df = pd.read_sql(test_q, conn)
+        from sqlalchemy import text as _text
+        with engine.connect() as _c:
+            test_df = pd.read_sql(
+                "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'rentals'",
+                _c
+            )
         if test_df.iloc[0, 0] == 0:
             return pd.DataFrame()
     except Exception:
@@ -152,19 +161,20 @@ def load_rentals_data():
       AND monthly_rent <= 100000
     ORDER BY updated_at DESC
     """
-    df = pd.read_sql(query, conn)
+    with engine.connect() as _c:
+        df = pd.read_sql(query, _c)
     
     if df.empty:
         return df
     
     # Extract disposition from title
-    title_disp = df['title'].str.extract(r'(\d\+(?:kk|1)|Atypický)', expand=False)
+    title_disp = df['title'].str.extract(r'(\d\+(?:kk|1)|AtypickÃ½)', expand=False)
     df['disposition'] = df['disposition'].where(
         df['disposition'].notna() & (df['disposition'] != '0') & (df['disposition'] != 'None'),
         title_disp
     ).fillna('Unknown')
     
-    df['energy_class'] = df['energy_class'].astype(str).str.extract(r'(?:Třída )?([A-G])', expand=False).fillna('Unknown')
+    df['energy_class'] = df['energy_class'].astype(str).str.extract(r'(?:TÅ™Ã­da )?([A-G])', expand=False).fillna('Unknown')
     
     missing_area = df['usable_area'].isnull()
     if missing_area.any():
@@ -212,22 +222,22 @@ def load_rentals_data():
     return df
 
 
-# ─────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # LOAD DATA
-# ─────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 sales_df = load_sales_data()
 rentals_df = load_rentals_data()
 has_rentals = not rentals_df.empty
 
-# ─────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # NAVIGATION SIDEBAR
-# ─────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 st.sidebar.title("Navigation")
 page = button_group("Go to", ["Dashboard", "Prediction Engine"], "nav_page", sidebar=True)
 
-# ═══════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # DASHBOARD PAGE
-# ═══════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 if page == "Dashboard":
     # Market mode toggle
     st.sidebar.markdown("---")
@@ -244,7 +254,7 @@ if page == "Dashboard":
     psqm_col = 'rent_per_sqm' if is_rental else 'price_per_sqm'
     price_label = "Monthly Rent (CZK)" if is_rental else "Price (CZK)"
     
-    # ── FILTERS ──
+    # â”€â”€ FILTERS â”€â”€
     st.sidebar.markdown("---")
     st.sidebar.header("Filters")
     
@@ -255,7 +265,7 @@ if page == "Dashboard":
             (int(raw_df[price_col].min()), int(raw_df[price_col].max()))
         )
         min_area, max_area = st.sidebar.slider(
-            "Usable Area (m²)", 
+            "Usable Area (mÂ²)", 
             int(raw_df['usable_area'].min()), int(raw_df['usable_area'].max()), 
             (int(raw_df['usable_area'].min()), int(raw_df['usable_area'].max()))
         )
@@ -292,8 +302,8 @@ if page == "Dashboard":
     else:
         df = raw_df
 
-    # ── TOP TABLE ──
-    header_text = "Rental Listings — Live Market Table" if is_rental else "Algorithmic Predictor Live Table"
+    # â”€â”€ TOP TABLE â”€â”€
+    header_text = "Rental Listings â€” Live Market Table" if is_rental else "Algorithmic Predictor Live Table"
     st.subheader(header_text)
     
     def color_delta_text(val):
@@ -308,7 +318,7 @@ if page == "Dashboard":
                            'building_type', 'floor', 'building_condition', 'furnished', pred_col, 'market_delta', 'lift']
             format_dict = {
                 'monthly_rent': '{:,.0f}',
-                'usable_area': '{:.1f} m²',
+                'usable_area': '{:.1f} mÂ²',
                 pred_col: '{:,.0f} CZK/mo'
             }
         else:
@@ -316,7 +326,7 @@ if page == "Dashboard":
                            'building_type', 'floor', 'building_condition', 'ownership_type', pred_col, 'market_delta', 'lift']
             format_dict = {
                 'price': '{:,.0f}',
-                'usable_area': '{:.1f} m²',
+                'usable_area': '{:.1f} mÂ²',
                 pred_col: '{:,.0f} CZK'
             }
         
@@ -327,7 +337,7 @@ if page == "Dashboard":
     else:
         st.info("No data available for the current filters.")
 
-    # ── MAP ──
+    # â”€â”€ MAP â”€â”€
     map_title = "Prague Rental Geolocations" if is_rental else "Prague Flat Geolocations"
     st.subheader(map_title)
     if not df.empty and psqm_col in df.columns:
@@ -387,7 +397,7 @@ if page == "Dashboard":
     else:
         st.info("No matching flats found for the active filter set.")
 
-    # ── BOTTOM INSIGHTS ──
+    # â”€â”€ BOTTOM INSIGHTS â”€â”€
     st.markdown("---")
     st.subheader("Market Insights")
     k1, k2, k3, k4 = st.columns(4)
@@ -453,9 +463,9 @@ if page == "Dashboard":
                 st.plotly_chart(fig2, use_container_width=True)
 
 
-# ═══════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # PREDICTION ENGINE PAGE
-# ═══════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 elif page == "Prediction Engine":
     st.header("Advanced Prediction Engine")
     
@@ -482,24 +492,24 @@ elif page == "Prediction Engine":
         
         with c1:
             if is_rental_pred:
-                p_area = st.number_input("Usable Area (m²)", value=50, step=1)
+                p_area = st.number_input("Usable Area (mÂ²)", value=50, step=1)
             else:
-                p_area = st.number_input("Usable Area (m²)", value=40, step=1)
+                p_area = st.number_input("Usable Area (mÂ²)", value=40, step=1)
             p_disp = st.selectbox("Disposition (Optional)", ["Unknown", "1+kk", "1+1", "2+kk", "2+1", "3+kk", "3+1", "4+kk"])
             p_dist = st.selectbox("District (Optional)", ["Unknown"] + valid_districts)
             p_neigh = st.selectbox("Neighborhood (Optional)", ["Unknown"] + valid_neighborhoods)
         with c2:
             p_floor = st.number_input("Floor Level", value=2, step=1)
-            p_type = st.selectbox("Building Type (Optional)", ["Unknown", "Cihlová", "Panelová", "Smíšená", "Skeletová", "Novostavba"])
-            p_cond = st.selectbox("Building Condition (Optional)", ["Unknown", "Velmi dobrý", "Dobrý", "Po rekonstrukci", "Před rekonstrukcí", "Novostavba", "Projekt"])
+            p_type = st.selectbox("Building Type (Optional)", ["Unknown", "CihlovÃ¡", "PanelovÃ¡", "SmÃ­Å¡enÃ¡", "SkeletovÃ¡", "Novostavba"])
+            p_cond = st.selectbox("Building Condition (Optional)", ["Unknown", "Velmi dobrÃ½", "DobrÃ½", "Po rekonstrukci", "PÅ™ed rekonstrukcÃ­", "Novostavba", "Projekt"])
         with c3:
             p_energy = st.selectbox("Energy Class (Optional)", ["Unknown", "A", "B", "C", "D", "E", "F", "G"])
             
             if is_rental_pred:
-                p_furn = st.selectbox("Furnished (Optional)", ["Unknown", "Vybavený", "Částečně vybavený", "Nevybavený"])
-                p_loc_type = st.selectbox("Location Type (Optional)", ["Unknown", "Centrum obce", "Klidná část obce", "Okraj obce"])
+                p_furn = st.selectbox("Furnished (Optional)", ["Unknown", "VybavenÃ½", "ÄŒÃ¡steÄnÄ› vybavenÃ½", "NevybavenÃ½"])
+                p_loc_type = st.selectbox("Location Type (Optional)", ["Unknown", "Centrum obce", "KlidnÃ¡ ÄÃ¡st obce", "Okraj obce"])
             else:
-                p_owner = st.selectbox("Ownership Type (Optional)", ["Unknown", "Osobní", "Družstevní", "Státní/obecní"])
+                p_owner = st.selectbox("Ownership Type (Optional)", ["Unknown", "OsobnÃ­", "DruÅ¾stevnÃ­", "StÃ¡tnÃ­/obecnÃ­"])
             
             st.markdown("**Amenities**")
             p_lift = st.checkbox("Lift Access", value=True)
@@ -591,7 +601,7 @@ elif page == "Prediction Engine":
                 model_name = "rental" if is_rental_pred else "sales"
                 st.error(f"The {model_name} model file is not available! Run the training script first.")
 
-    # ── ML METRICS & DIAGNOSTICS ──
+    # â”€â”€ ML METRICS & DIAGNOSTICS â”€â”€
     st.markdown("---")
     st.subheader("Algorithm Accuracy & Diagnostics")
     
@@ -612,7 +622,7 @@ elif page == "Prediction Engine":
         m1.metric("Mean Absolute Error (MAE)", f"{metrics.get('mae', 0):,.0f} {unit}", help="Exact currency deviation across hidden test set")
         m2.metric("Relative Error (MAPE)", f"{metrics.get('mape', 0):.2%}", help="Average percentage mismatch between prediction and reality")
         m3.metric("Root Mean Squared Error", f"{metrics.get('rmse', 0):,.0f} {unit}")
-        m4.metric("R² Correlation Math", f"{metrics.get('r2', 0):.4f}")
+        m4.metric("RÂ² Correlation Math", f"{metrics.get('r2', 0):.4f}")
         
     c_diag1, c_diag2 = st.columns([1, 1])
     with c_diag1:
@@ -623,3 +633,4 @@ elif page == "Prediction Engine":
             else:
                 st.markdown("This chart perfectly displays exactly what parameters our Tree algorithm valued universally the most heavily when deciding prices.", unsafe_allow_html=True)
             st.image(importance_path, use_container_width=True)
+
